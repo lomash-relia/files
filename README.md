@@ -1,3 +1,5 @@
+https://open-vsx.org/extension/donjayamanne/python-extension-pack
+
 https://colab.research.google.com/drive/1Fz3D_KkflZcKy6yehERKPIkiANIm2I9c?usp=sharing
 
 https://github.com/nltk/nltk_data/raw/gh-pages/packages/tokenizers/punkt.zip
