@@ -1,112 +1,121 @@
 # Install dependencies before running:
-# !pip install -q langchain-ollama langchain langchain-community langchain-chroma langchain-text-splitters langchain-huggingface unstructured[pdf] nltk fastapi uvicorn
-
 # http://127.0.0.1:8000/docs
+# pip install fastapi uvicorn langchain langchain-community langchain-text-splitters langchain-huggingface langchain-chroma langchain-ollama chromadb pypdf
+# pip install -r requirements.txt --no-index --find-links=""
 
-import os
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+import uvicorn
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
-from pydantic import BaseModel
-
-from langchain_community.document_loaders import UnstructuredPDFLoader, DirectoryLoader
+from langchain_community.document_loaders import PyPDFLoader, DirectoryLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
-from langchain_ollama.llms import OllamaLLM
-from langchain.chains import RetrievalQA
+from langchain.chains import create_retrieval_chain
+from langchain.chains.combine_documents import create_stuff_documents_chain
+from langchain.prompts import ChatPromptTemplate
+from langchain_ollama import OllamaLLM
+from chromadb.config import Settings  
 
-import nltk
-
-# Setup basic logging configuration
+# Set up basic logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-nltk.download('averaged_perceptron_tagger_eng')
-nltk.download('punkt_tab')
-
-# Global variable to hold our initialized QA chain
-qa_chain = None
+# Define a request model for incoming queries
+class QueryRequest(BaseModel):
+    query: str
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global qa_chain
-    logger.info("Starting up the application...")
+    logger.info("Startup: Initializing document loading and chain creation...")
+    
+    # Load all PDF documents from the "data/" directory using PyPDFLoader.
+    loader = DirectoryLoader(
+        "data/", 
+        glob="./*.pdf", 
+        loader_cls=PyPDFLoader, 
+        show_progress=True
+    )
+    documents = loader.load()
+    logger.info(f"Loaded {len(documents)} documents.")
 
-    # === Initialization code ===
-    logger.info("Creating embeddings using HuggingFaceEmbeddings.")
+    # Split documents into smaller text chunks.
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=500,
+        chunk_overlap=20,
+        length_function=len,
+    )
+    text_chunks = text_splitter.split_documents(documents)
+    logger.info(f"Split documents into {len(text_chunks)} text chunks.")
+
+    # Create embeddings and build the vector store.
     embedding = HuggingFaceEmbeddings()
-
     persist_directory = "doc_db"
-
-    # Check if the persisted directory exists to decide whether to create a new vector store or load an existing one.
-    if os.path.exists(persist_directory):
-        logger.info("Persisted vector store found. Loading existing Chroma vector store.")
-        vectorstore = Chroma(persist_directory=persist_directory, embedding_function=embedding)
-    else:
-        logger.info("No persisted vector store found. Loading PDF documents and creating a new one.")
-        logger.info("Loading PDF documents from the 'data/' directory.")
-        loader = DirectoryLoader("data/", glob="./*.pdf", loader_cls=UnstructuredPDFLoader, show_progress=True)
-        documents = loader.load()
-
-        logger.info(f"Loaded {len(documents)} documents. Splitting documents into smaller chunks.")
-        text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=200,
-            chunk_overlap=40,
-            length_function=len,
-        )
-        text_chunks = text_splitter.split_documents(documents)
-        logger.info(f"Split documents into {len(text_chunks)} text chunks.")
-
-        logger.info("Initializing or loading vector store using Chroma.")
-        vectorstore = Chroma.from_documents(
-            documents=text_chunks,
-            embedding=embedding,
-            persist_directory=persist_directory
-        )
-
-    logger.info("Creating a retriever from the vector store.")
+    client_settings = Settings(
+        is_persistent=True,
+        persist_directory=persist_directory,
+        anonymized_telemetry=False  
+    )
+    vectorstore = Chroma.from_documents(
+        documents=text_chunks,
+        embedding=embedding,
+        persist_directory=persist_directory,
+        client_settings=client_settings
+    )
     retriever = vectorstore.as_retriever()
+    logger.info("Vectorstore and retriever created.")
 
-    logger.info("Initializing the language model with OllamaLLM.")
+    # Define the prompt template.
+    system_prompt = (
+        "Use the following context to answer the question. "
+        "If you don't know the answer, please say so. "
+        "Keep your answer concise. Context: {context}"
+    )
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", system_prompt),
+        ("human", "{input}")
+    ])
+
+    # Initialize the LLM.
     llm = OllamaLLM(
-        model='gemma2:2b-instruct-q5_K_M',
-        temperature=0.5
+        model='gemma2:2b-instruct-q5_K_M'
     )
 
-    logger.info("Setting up the retrieval-based QA chain.")
-    qa_chain = RetrievalQA.from_chain_type(
-        llm=llm,
-        chain_type="stuff",
-        retriever=retriever,
-        return_source_documents=True
-    )
-    logger.info("Initialization complete. QA chain is ready.")
-    # === End of initialization ===
+    # Create the question-answer chain and combine it with the retriever.
+    question_answer_chain = create_stuff_documents_chain(llm, prompt)
+    rag_chain = create_retrieval_chain(retriever, question_answer_chain)
+    logger.info("Retrieval chain created successfully.")
+
+    # Store the RAG chain in the application state for later use.
+    app.state.rag_chain = rag_chain
 
     yield
 
-    logger.info("Shutting down application...")
+    logger.info("Shutdown: Cleaning up resources...")
 
-# Initialize FastAPI app with lifespan handler
-app = FastAPI(lifespan=lifespan)
+# Create the FastAPI app using the lifespan context manager.
+app = FastAPI(lifespan=lifespan, title="RAG FastAPI Service")
 
-@app.get("/")
+@app.get('/')
 async def home():
-    logger.info("Received request at '/' endpoint.")
-    return "Hello World"
+    return 'Hello World'
 
-class QARequest(BaseModel):
-    query: str
+@app.post("/ask")
+async def ask_question(query_request: QueryRequest):
+    logger.info(f"Received query: {query_request.query}")
+    rag_chain = app.state.rag_chain
+    if rag_chain is None:
+        logger.error("Chain not initialized.")
+        raise HTTPException(status_code=500, detail="Chain not initialized.")
+    try:
+        result = rag_chain.invoke({"input": query_request.query})
+        logger.info("Query processed successfully.")
+        return {"result": result}
+    except Exception as e:
+        logger.exception("Error processing query:")
+        raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/query")
-async def query_qa(request: QARequest):
-    logger.info(f"Received query: {request.query}")
-    if qa_chain is None:
-        logger.error("QA chain has not been initialized.")
-        return {"error": "QA chain not initialized."}
-        
-    response = qa_chain.invoke({"query": request.query})
-    logger.info("Query processed successfully.")
-    return response
+if __name__ == "__main__":
+    uvicorn.run(app)
