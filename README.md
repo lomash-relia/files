@@ -1,10 +1,10 @@
-https://github.com/bvnayak/CAHVOR_camera_model?tab=readme-ov-file
+https://github.com/akinami3/PybulletRobotics/
 
-https://arxiv.org/html/2501.15440v2
+https://github.com/bvnayak/CAHVOR_camera_model
 
 https://open-vsx.org/extension/donjayamanne/python-extension-pack
 
-https://colab.research.google.com/drive/1Fz3D_KkflZcKy6yehERKPIkiANIm2I9c?usp=sharing
+https://colab.research.google.com/drive/1Fz3D_KkflZcKy6yehERKPIkiANIm2I9c
 
 https://github.com/nltk/nltk_data/raw/gh-pages/packages/tokenizers/punkt.zip
 
