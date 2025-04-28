@@ -1,0 +1,599 @@
+import cv2
+import numpy as np
+import os
+import glob
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
+
+# --------------------------------
+# PART 1: CAMERA SETUP AND TESTING
+# --------------------------------
+def test_cameras():
+    # Open both cameras
+    cap_left = cv2.VideoCapture(0)
+    cap_right = cv2.VideoCapture(1)
+    
+    # Check if cameras opened successfully
+    if not cap_left.isOpened() or not cap_right.isOpened():
+        print("Error: Could not open webcams")
+        exit()
+    
+    # Set the resolution for both cameras
+    width, height = 640, 480
+    cap_left.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+    cap_left.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+    cap_right.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+    cap_right.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+    
+    while True:
+        # Capture frames
+        ret_left, frame_left = cap_left.read()
+        ret_right, frame_right = cap_right.read()
+        
+        if not ret_left or not ret_right:
+            break
+            
+        # Display the frames
+        cv2.imshow('Left Camera', frame_left)
+        cv2.imshow('Right Camera', frame_right)
+        
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+    
+    # Release the cameras
+    cap_left.release()
+    cap_right.release()
+    cv2.destroyAllWindows()
+
+# --------------------------------------
+# PART 2: CAPTURE CALIBRATION IMAGES
+# --------------------------------------
+def capture_calibration_images():
+    # Create directories to save calibration images
+    os.makedirs('calibration_images/left', exist_ok=True)
+    os.makedirs('calibration_images/right', exist_ok=True)
+    
+    # Open both cameras
+    cap_left = cv2.VideoCapture(0)
+    cap_right = cv2.VideoCapture(1)
+    
+    # Set resolution
+    width, height = 640, 480
+    cap_left.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+    cap_left.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+    cap_right.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+    cap_right.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+    
+    # Counter for calibration images
+    img_counter = 0
+    
+    print("Press SPACE to capture image pair, ESC to exit.")
+    
+    while True:
+        # Capture frames
+        ret_left, frame_left = cap_left.read()
+        ret_right, frame_right = cap_right.read()
+        
+        if not ret_left or not ret_right:
+            print("Failed to grab frame")
+            break
+        
+        # Display the frames
+        cv2.imshow('Left Camera', frame_left)
+        cv2.imshow('Right Camera', frame_right)
+        
+        k = cv2.waitKey(1)
+        
+        if k % 256 == 27:  # ESC pressed
+            print("Escape hit, closing...")
+            break
+        elif k % 256 == 32:  # SPACE pressed
+            # Save images
+            left_name = f'calibration_images/left/left_{img_counter}.png'
+            right_name = f'calibration_images/right/right_{img_counter}.png'
+            cv2.imwrite(left_name, frame_left)
+            cv2.imwrite(right_name, frame_right)
+            print(f"Saved image pair {img_counter}")
+            img_counter += 1
+    
+    # Release resources
+    cap_left.release()
+    cap_right.release()
+    cv2.destroyAllWindows()
+
+# --------------------------------------
+# PART 3: CAMERA CALIBRATION
+# --------------------------------------
+def calibrate_cameras():
+    # Define the dimensions of checkerboard - inner corners for a 9x6 chessboard
+    CHECKERBOARD = (5, 8)  # 5 rows, 8 columns of internal corners
+    SQUARE_SIZE = 3.0  # 3.0 cm square size
+    
+    # Termination criteria
+    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
+    
+    # Prepare object points with real-world measurements using square size
+    objp = np.zeros((CHECKERBOARD[0] * CHECKERBOARD[1], 3), np.float32)
+    objp[:, :2] = np.mgrid[0:CHECKERBOARD[1], 0:CHECKERBOARD[0]].T.reshape(-1, 2) * SQUARE_SIZE
+    
+    # Arrays to store object points and image points from all images
+    objpoints = []  # 3D points in real world space
+    imgpoints_left = []  # 2D points in left image plane
+    imgpoints_right = []  # 2D points in right image plane
+    
+    # Get list of calibration images
+    images_left = sorted(glob.glob('calibration_images/left/*.png'))
+    images_right = sorted(glob.glob('calibration_images/right/*.png'))
+    
+    if len(images_left) == 0 or len(images_right) == 0:
+        print("No calibration images found! Run capture_calibration_images first.")
+        return None, None, None, None
+    
+    img_shape = None
+    
+    # Process left camera images
+    print("Processing left camera images...")
+    for fname in images_left:
+        img = cv2.imread(fname)
+        if img_shape is None:
+            img_shape = img.shape[:2]
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        
+        # Find the chess board corners
+        ret, corners = cv2.findChessboardCorners(gray, CHECKERBOARD, None)
+        
+        if ret:
+            # Refine the corners
+            corners2 = cv2.cornerSubPix(gray, corners, (11, 11), (-1, -1), criteria)
+            objpoints.append(objp)
+            imgpoints_left.append(corners2)
+            
+            # Draw and display the corners
+            img = cv2.drawChessboardCorners(img, CHECKERBOARD, corners2, ret)
+            cv2.imshow('Left Chessboard', img)
+            cv2.waitKey(500)
+    
+    cv2.destroyAllWindows()
+    
+    # Calibrate left camera
+    print("Calibrating left camera...")
+    ret_left, mtx_left, dist_left, rvecs_left, tvecs_left = cv2.calibrateCamera(
+        objpoints, imgpoints_left, gray.shape[::-1], None, None)
+    
+    # Process right camera images
+    objpoints = []  # Reset for right camera
+    print("Processing right camera images...")
+    for fname in images_right:
+        img = cv2.imread(fname)
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        
+        # Find the chess board corners
+        ret, corners = cv2.findChessboardCorners(gray, CHECKERBOARD, None)
+        
+        if ret:
+            # Refine the corners
+            corners2 = cv2.cornerSubPix(gray, corners, (11, 11), (-1, -1), criteria)
+            objpoints.append(objp)
+            imgpoints_right.append(corners2)
+            
+            # Draw and display the corners
+            img = cv2.drawChessboardCorners(img, CHECKERBOARD, corners2, ret)
+            cv2.imshow('Right Chessboard', img)
+            cv2.waitKey(500)
+    
+    cv2.destroyAllWindows()
+    
+    # Calibrate right camera
+    print("Calibrating right camera...")
+    ret_right, mtx_right, dist_right, rvecs_right, tvecs_right = cv2.calibrateCamera(
+        objpoints, imgpoints_right, gray.shape[::-1], None, None)
+    
+    # Save calibration results
+    np.savez('calibration_data.npz', 
+             mtx_left=mtx_left, dist_left=dist_left,
+             mtx_right=mtx_right, dist_right=dist_right)
+    
+    print("Individual camera calibration complete!")
+    
+    return objpoints, imgpoints_left, imgpoints_right, img_shape
+
+# --------------------------------------
+# PART 4: STEREO CALIBRATION
+# --------------------------------------
+def stereo_calibrate(objpoints, imgpoints_left, imgpoints_right, img_shape):
+    # Load the individual camera calibration data
+    data = np.load('calibration_data.npz')
+    mtx_left = data['mtx_left']
+    dist_left = data['dist_left']
+    mtx_right = data['mtx_right']
+    dist_right = data['dist_right']
+    
+    # Make sure we have the same number of points from both cameras
+    if len(imgpoints_left) != len(imgpoints_right):
+        print("Error: Number of points don't match")
+        return
+    
+    # Termination criteria
+    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
+    
+    # Stereo calibration
+    print("Performing stereo calibration...")
+    ret, mtx_left, dist_left, mtx_right, dist_right, R, T, E, F = cv2.stereoCalibrate(
+        objpoints, imgpoints_left, imgpoints_right,
+        mtx_left, dist_left, mtx_right, dist_right,
+        img_shape[::-1], criteria=criteria, 
+        flags=cv2.CALIB_FIX_INTRINSIC + cv2.CALIB_RATIONAL_MODEL)
+    
+    # Stereo rectification with alpha=0.9 to keep more of the original image
+    print("Computing rectification parameters...")
+    R1, R2, P1, P2, Q, roi_left, roi_right = cv2.stereoRectify(
+        mtx_left, dist_left, mtx_right, dist_right,
+        img_shape[::-1], R, T, flags=cv2.CALIB_ZERO_DISPARITY, alpha=0.9)
+    
+    # Calculate stereo maps
+    map_left_x, map_left_y = cv2.initUndistortRectifyMap(
+        mtx_left, dist_left, R1, P1, img_shape[::-1], cv2.CV_32FC1)
+    map_right_x, map_right_y = cv2.initUndistortRectifyMap(
+        mtx_right, dist_right, R2, P2, img_shape[::-1], cv2.CV_32FC1)
+    
+    # Save stereo rectification data
+    np.savez('stereo_rectification_data.npz', 
+             map_left_x=map_left_x, map_left_y=map_left_y,
+             map_right_x=map_right_x, map_right_y=map_right_y,
+             Q=Q)
+    
+    print("Stereo calibration and rectification complete!")
+    
+    # Test rectification on the first calibration image
+    try:
+        img_left = cv2.imread(sorted(glob.glob('calibration_images/left/*.png'))[0])
+        img_right = cv2.imread(sorted(glob.glob('calibration_images/right/*.png'))[0])
+        
+        img_left_rect = cv2.remap(img_left, map_left_x, map_left_y, cv2.INTER_LINEAR)
+        img_right_rect = cv2.remap(img_right, map_right_x, map_right_y, cv2.INTER_LINEAR)
+        
+        # Draw horizontal lines for checking rectification
+        for i in range(0, img_left.shape[0], 30):
+            cv2.line(img_left_rect, (0, i), (img_left.shape[1], i), (0, 255, 0), 1)
+            cv2.line(img_right_rect, (0, i), (img_right.shape[1], i), (0, 255, 0), 1)
+        
+        # Show the rectified images side by side
+        cv2.imshow('Rectification Test', np.hstack((img_left_rect, img_right_rect)))
+        print("Showing rectification test. Press any key to continue.")
+        cv2.waitKey(0)
+        cv2.destroyAllWindows()
+        
+        # Print debug info
+        print(f"Map shapes: {map_left_x.shape}, {map_left_y.shape}")
+        print(f"Map left X range: {np.min(map_left_x)}, {np.max(map_left_x)}")
+        print(f"Map left Y range: {np.min(map_left_y)}, {np.max(map_left_y)}")
+    except Exception as e:
+        print(f"Error testing rectification: {e}")
+
+# --------------------------------------
+# PART 5: POINT CLOUD UTILITY
+# --------------------------------------
+def save_point_cloud(points_3D, colors, filename):
+    # Filter out invalid points
+    mask = ~np.isnan(points_3D[:,:,2]) & ~np.isinf(points_3D[:,:,2]) & (points_3D[:,:,2] < 10000) & (points_3D[:,:,2] > 0)
+    valid_points = points_3D[mask]
+    valid_colors = colors[mask]
+    
+    # Create point cloud file
+    with open(filename, 'w') as f:
+        f.write('ply\n')
+        f.write('format ascii 1.0\n')
+        f.write(f'element vertex {len(valid_points)}\n')
+        f.write('property float x\n')
+        f.write('property float y\n')
+        f.write('property float z\n')
+        f.write('property uchar red\n')
+        f.write('property uchar green\n')
+        f.write('property uchar blue\n')
+        f.write('end_header\n')
+        
+        for i in range(len(valid_points)):
+            x, y, z = valid_points[i]
+            b, g, r = valid_colors[i]
+            f.write(f'{x} {y} {z} {r} {g} {b}\n')
+    
+    print(f"Point cloud saved to {filename}")
+
+# --------------------------------------
+# PART 6: REAL-TIME STEREO PROCESSING WITH YOLO
+# --------------------------------------
+def real_time_stereo():
+    try:
+        # Load stereo rectification data
+        data = np.load('stereo_rectification_data.npz')
+        map_left_x = data['map_left_x']
+        map_left_y = data['map_left_y']
+        map_right_x = data['map_right_x']
+        map_right_y = data['map_right_y']
+        Q = data['Q']
+        
+        # Debug prints for maps
+        print(f"Map shapes: {map_left_x.shape}, {map_left_y.shape}")
+        print(f"Map left X range: {np.min(map_left_x)}, {np.max(map_left_x)}")
+        print(f"Map left Y range: {np.min(map_left_y)}, {np.max(map_left_y)}")
+    except Exception as e:
+        print(f"Error loading stereo rectification data: {e}")
+        print("Stereo rectification data not found! Run calibration steps first.")
+        return
+    
+    # Load YOLO model
+    try:
+        from ultralytics import YOLO
+        model = YOLO("yolo11n.pt")
+        use_yolo = True
+        print("YOLO model loaded successfully")
+    except Exception as e:
+        print(f"Could not load YOLO model: {e}")
+        use_yolo = False
+    
+    # Open both cameras
+    cap_left = cv2.VideoCapture(0)
+    cap_right = cv2.VideoCapture(1)
+    
+    # Check if cameras opened successfully
+    if not cap_left.isOpened() or not cap_right.isOpened():
+        print("Error: Could not open webcams")
+        exit()
+    
+    # Set resolution
+    width, height = 640, 480
+    cap_left.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+    cap_left.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+    cap_right.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+    cap_right.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+    
+    # Debug print to check calibration resolution matches camera resolution
+    print(f"Camera resolution: {width}x{height}")
+    print(f"Calibration map shape: {map_left_x.shape}")
+    
+    # Create stereo matcher objects
+    # StereoBM
+    stereo_bm = cv2.StereoBM_create(numDisparities=16*10, blockSize=15)
+    
+    # StereoSGBM
+    stereo_sgbm = cv2.StereoSGBM_create(
+        minDisparity=0,
+        numDisparities=16*10,  # must be divisible by 16
+        blockSize=11,
+        P1=8 * 3 * 11**2,      # P1 = 8*number_of_image_channels*blockSize^2
+        P2=32 * 3 * 11**2,     # P2 = 32*number_of_image_channels*blockSize^2
+        disp12MaxDiff=1,
+        uniquenessRatio=15,
+        speckleWindowSize=100,
+        speckleRange=32
+    )
+    
+    # Use SGBM by default (better quality)
+    stereo = stereo_sgbm
+    
+    # Create trackbars for tuning parameters
+    cv2.namedWindow('Disparity Map')
+    cv2.createTrackbar('numDisparities', 'Disparity Map', 16, 25, lambda x: None)
+    cv2.createTrackbar('blockSize', 'Disparity Map', 5, 50, lambda x: None)
+    cv2.createTrackbar('Method', 'Disparity Map', 1, 1, lambda x: None)  # 0 for BM, 1 for SGBM
+    cv2.createTrackbar('YOLO', 'Disparity Map', 1 if use_yolo else 0, 1, lambda x: None)  # Toggle YOLO on/off
+    
+    print("\nControls:")
+    print("- Press 'q' to quit")
+    print("- Press 's' to save point cloud")
+    print("- Press 'm' to toggle between StereoBM and StereoSGBM")
+    print("- Press 'y' to toggle YOLO detection")
+    print("- Use trackbars to adjust parameters")
+    
+    # Test rectification on a sample image
+    try:
+        test_frame = cv2.imread('calibration_images/left/left_0.png')
+        if test_frame is not None:
+            test_rectified = cv2.remap(test_frame, map_left_x, map_left_y, cv2.INTER_LINEAR)
+            cv2.imshow('Test Rectification', test_rectified)
+            cv2.waitKey(1000)
+            cv2.destroyWindow('Test Rectification')
+    except Exception as e:
+        print(f"Rectification test error: {e}")
+    
+    while True:
+        # Capture frames
+        ret_left, frame_left = cap_left.read()
+        ret_right, frame_right = cap_right.read()
+        
+        if not ret_left or not ret_right:
+            print("Failed to capture frames")
+            break
+        
+        # Get current parameters from trackbars
+        num_disp = cv2.getTrackbarPos('numDisparities', 'Disparity Map') * 16
+        num_disp = max(16, num_disp)  # Ensure minimum value
+        block_size = cv2.getTrackbarPos('blockSize', 'Disparity Map') * 2 + 5
+        block_size = max(5, block_size)  # Ensure minimum value
+        if block_size % 2 == 0:  # Ensure odd value
+            block_size += 1
+        method = cv2.getTrackbarPos('Method', 'Disparity Map')
+        use_yolo_now = cv2.getTrackbarPos('YOLO', 'Disparity Map') == 1 and use_yolo
+        
+        # Update stereo matcher parameters
+        if method == 0:
+            stereo = stereo_bm
+            stereo.setNumDisparities(num_disp)
+            stereo.setBlockSize(block_size)
+        else:
+            stereo = stereo_sgbm
+            stereo.setNumDisparities(num_disp)
+            stereo.setBlockSize(block_size)
+            stereo.setP1(8 * 3 * block_size**2)
+            stereo.setP2(32 * 3 * block_size**2)
+        
+        # Store original frames for YOLO detection
+        original_left = frame_left.copy()
+        
+        # Check input frames are valid
+        if frame_left.size == 0 or frame_right.size == 0:
+            print("Empty frames received")
+            continue
+            
+        # Undistort and rectify images with boundaries checking
+        try:
+            frame_left_rectified = cv2.remap(frame_left.copy(), map_left_x, map_left_y, 
+                                           cv2.INTER_LINEAR, cv2.BORDER_CONSTANT)
+            frame_right_rectified = cv2.remap(frame_right.copy(), map_right_x, map_right_y, 
+                                            cv2.INTER_LINEAR, cv2.BORDER_CONSTANT)
+        except Exception as e:
+            print(f"Remapping error: {e}")
+            print(f"Frame shape: {frame_left.shape}, Map shape: {map_left_x.shape}")
+            continue  # Skip this frame and try the next one
+        
+        # Check if remapped images are valid
+        if frame_left_rectified.max() == 0 or frame_right_rectified.max() == 0:
+            print("Warning: Remapped image is blank. Showing original frames instead.")
+            # Fall back to original frames for display
+            frame_left_rectified = frame_left.copy()
+            frame_right_rectified = frame_right.copy()
+        
+        # Convert to grayscale for disparity calculation
+        gray_left = cv2.cvtColor(frame_left_rectified, cv2.COLOR_BGR2GRAY)
+        gray_right = cv2.cvtColor(frame_right_rectified, cv2.COLOR_BGR2GRAY)
+        
+        # Compute disparity map
+        disparity = stereo.compute(gray_left, gray_right)
+        
+        # Normalize disparity for display
+        if method == 0:  # StereoBM produces 16-bit signed values
+            disparity_normalized = cv2.normalize(disparity, None, alpha=0, beta=255, 
+                                              norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+        else:  # StereoSGBM produces 16-bit signed values with different scale
+            disparity_normalized = cv2.normalize(disparity, None, alpha=0, beta=255, 
+                                              norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+        
+        # Apply colormap for visualization
+        disparity_color = cv2.applyColorMap(disparity_normalized, cv2.COLORMAP_JET)
+        
+        # Draw horizontal lines for visual verification of rectification
+        display_left = frame_left_rectified.copy()
+        display_right = frame_right_rectified.copy()
+        for i in range(0, display_left.shape[0], 30):
+            cv2.line(display_left, (0, i), (display_left.shape[1], i), (0, 255, 0), 1)
+            cv2.line(display_right, (0, i), (display_right.shape[1], i), (0, 255, 0), 1)
+        
+        # Run YOLO object detection on the left camera frame
+        detection_frame = display_left.copy()
+        if use_yolo_now:
+            try:
+                # Run YOLO detection
+                results = model(frame_left_rectified)
+                
+                # Process detection results
+                for result in results:
+                    boxes = result.boxes
+                    for box in boxes:
+                        # Extract box coordinates
+                        x1, y1, x2, y2 = box.xyxy[0].cpu().numpy().astype(int)
+                        conf = float(box.conf[0].cpu().numpy())
+                        cls = int(box.cls[0].cpu().numpy())
+                        label = f"{model.names[cls]} {conf:.2f}"
+                        
+                        # Draw bounding box
+                        cv2.rectangle(detection_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)  
+                        
+                        # Draw label
+                        cv2.putText(detection_frame, label, (x1, y1 - 10), 
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                        
+                        # Calculate distance (if possible)
+                        # Use the center of the bounding box
+                        cx = (x1 + x2) // 2
+                        cy = (y1 + y2) // 2
+                        
+                        # Get the disparity value at this point (if valid coordinates)
+                        if 0 <= cy < disparity.shape[0] and 0 <= cx < disparity.shape[1]:
+                            disp_value = disparity[cy, cx]
+                            
+                            # Calculate distance using Q matrix (if disparity is valid)
+                            if disp_value > 0:
+                                # Convert disparity to real-world coordinates
+                                point = cv2.perspectiveTransform(
+                                    np.array([[[cx, cy, disp_value/16.0]]]).astype(np.float32), Q)
+                                
+                                # Calculate distance (Z-coordinate) and convert to meters
+                                distance = abs(point[0][0][2]) / 100.0  # Convert from cm to meters
+                                
+                                # Display distance
+                                dist_text = f"{distance:.2f}m"
+                                cv2.putText(detection_frame, dist_text, (x1, y2 + 20), 
+                                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+            except Exception as e:
+                print(f"YOLO detection error: {e}")
+        
+        # Calculate 3D points from disparity
+        if method == 0:
+            disparity_for_3d = disparity.astype(np.float32) / 16.0
+        else:
+            disparity_for_3d = disparity.astype(np.float32) / 16.0
+            
+        points_3D = cv2.reprojectImageTo3D(disparity_for_3d, Q)
+        
+        # Create side-by-side views
+        if use_yolo_now:
+            stereo_pair = np.hstack((detection_frame, display_right))
+        else:
+            stereo_pair = np.hstack((display_left, display_right))
+        
+        # Display images and disparity
+        cv2.imshow('Stereo Pair', stereo_pair)
+        cv2.imshow('Disparity Map', disparity_color)
+        if use_yolo_now:
+            cv2.imshow('YOLO Detection', detection_frame)
+        
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('q'):  # Quit
+            break
+        elif key == ord('s'):  # Save point cloud
+            save_point_cloud(points_3D, frame_left_rectified, 'stereo_pointcloud.ply')
+            print("Point cloud saved!")
+        elif key == ord('m'):  # Toggle method
+            method = 1 - method
+            cv2.setTrackbarPos('Method', 'Disparity Map', method)
+        elif key == ord('y') and use_yolo:  # Toggle YOLO
+            use_yolo_now = not use_yolo_now
+            cv2.setTrackbarPos('YOLO', 'Disparity Map', 1 if use_yolo_now else 0)
+    
+    # Release resources
+    cap_left.release()
+    cap_right.release()
+    cv2.destroyAllWindows()
+
+# --------------------------------------
+# MAIN FUNCTION
+# --------------------------------------
+def main():
+    print("Stereovision Project with YOLO Integration")
+    print("1. Test cameras")
+    print("2. Capture calibration images")
+    print("3. Calibrate cameras")
+    print("4. Run real-time stereo")
+    print("0. Exit")
+    
+    while True:
+        choice = input("\nEnter your choice (0-4): ")
+        
+        if choice == '1':
+            test_cameras()
+        elif choice == '2':
+            capture_calibration_images()
+        elif choice == '3':
+            objpoints, imgpoints_left, imgpoints_right, img_shape = calibrate_cameras()
+            if objpoints is not None:
+                stereo_calibrate(objpoints, imgpoints_left, imgpoints_right, img_shape)
+        elif choice == '4':
+            real_time_stereo()
+        elif choice == '0':
+            print("Exiting program.")
+            break
+        else:
+            print("Invalid choice. Please try again.")
+
+if __name__ == "__main__":
+    main()
